@@ -47,7 +47,8 @@ jobs:
   run-ast-scan:
     runs-on: ubuntu-latest
     container:
-      image: convisoappsec/convisoast_v2:latest
+      image: luherique/convisoast_v2:scanrun-dev
+
 
     steps:
       # Written in Python because every step runs inside the scanner image, which
