@@ -1,5 +1,8 @@
 name: AST Scan Orchestrator
 
+# Dispatched by the Conviso Platform. Serves two cases with one workflow:
+#   - post-merge scan   (commit_sha / pr_number are set)
+#   - on-demand "Run AST" from the platform UI (they are empty)
 on:
   workflow_dispatch:
     inputs:
@@ -8,28 +11,39 @@ on:
         required: true
         type: string
       branch:
-        description: 'Branch that was merged'
-        required: true
-        type: string
-      commit_sha:
-        description: 'Merge commit SHA'
-        required: true
-        type: string
-      pr_number:
-        description: 'Pull request number'
+        description: 'Branch to scan'
         required: true
         type: string
       api_url:
         description: 'Conviso Platform URL'
         required: false
         type: string
+      company_id:
+        description: 'Conviso company id'
+        required: false
+        type: string
+      asset_id:
+        description: 'Conviso asset id. When empty the scanner resolves the asset by repository name'
+        required: false
+        type: string
+      scan_run_id:
+        description: 'Scan run created by the platform. Correlates this execution with the run shown in the UI'
+        required: false
+        type: string
+      commit_sha:
+        description: 'Merge commit SHA (post-merge scans only)'
+        required: false
+        type: string
+      pr_number:
+        description: 'Pull request number (post-merge scans only)'
+        required: false
+        type: string
+
 jobs:
   run-ast-scan:
     runs-on: ubuntu-latest
     container:
-      image: convisoappsec/convisoast:latest
-      env:
-        CONVISO_API_KEY: ${{ secrets.CONVISO_API_KEY }}
+      image: convisoappsec/convisoast_v2:latest
 
     steps:
       - name: Checkout target repository
@@ -38,14 +52,26 @@ jobs:
           repository: ${{ inputs.repo_full_name }}
           ref: ${{ inputs.branch }}
           fetch-depth: 0
+          # The default GITHUB_TOKEN is scoped to THIS repository, so it cannot
+          # clone the target repo. CONVISO_REPO_TOKEN must be a PAT or GitHub App
+          # token with read access to every repository you scan.
+          token: ${{ secrets.CONVISO_REPO_TOKEN }}
 
-      - name: Run Conviso AST Scan
+      - name: Run Conviso AST
+        env:
+          CONVISO_APIKEY: ${{ secrets.CONVISO_APIKEY }}
+          CONVISO_BASE_URL: ${{ inputs.api_url || 'https://app.convisoappsec.com' }}
+          CONVISO_COMPANY_ID: ${{ inputs.company_id }}
+          CONVISO_ASSET_ID: ${{ inputs.asset_id }}
+          CONVISO_SCAN_RUN_ID: ${{ inputs.scan_run_id }}
+          CONVISO_BRANCH: ${{ inputs.branch }}
         run: |
-          echo "Starting AST scan for ${{ inputs.repo_full_name }}"
-          # Running AST scan without security gate enforcement (non-blocking)
-          conviso ast run --vulnerability-auto-close --company-id 520
+          conviso-ast -p . -o /tmp/conviso-ast-session.zip
 
-      - name: Report results
+      - name: Upload session log
         if: always()
-        run: |
-          echo "Scan process finished for PR #${{ inputs.pr_number }}"
+        uses: actions/upload-artifact@v4
+        with:
+          name: conviso-ast-session
+          path: /tmp/conviso-ast-session.zip
+          if-no-files-found: ignore
