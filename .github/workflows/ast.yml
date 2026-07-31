@@ -4,9 +4,14 @@ name: AST Scan Orchestrator
 #   - post-merge scan   (commit_sha / pr_number are set)
 #   - on-demand "Run AST" from the platform UI (they are empty)
 #
-# Only one secret is needed: CONVISO_APIKEY. The credential used to clone the
+# Only one secret is needed: CONVISO_API_KEY. The credential used to clone the
 # target repository is issued by the platform at run time, scoped to that single
 # repository with read-only access, and expires in about an hour.
+#
+# One Actions variable is also required: CONVISO_COMPANY_ID. Post-merge dispatches
+# carry no company id, and this project always serves a single integration — which
+# belongs to a single company — so the id is a constant here. See the "Run Conviso
+# AST" step.
 on:
   workflow_dispatch:
     inputs:
@@ -23,7 +28,7 @@ on:
         required: false
         type: string
       company_id:
-        description: 'Conviso company id'
+        description: 'Conviso company id. When empty the CONVISO_COMPANY_ID variable is used'
         required: false
         type: string
       asset_id:
@@ -49,61 +54,26 @@ jobs:
     container:
       image: luherique/convisoast_v2:scanrun-dev
 
-
     steps:
-      # Written in Python because every step runs inside the scanner image, which
-      # ships git and python3 but no curl and no jq.
+      # The job's own GITHUB_TOKEN only reaches THIS repository, so it cannot clone
+      # the one being scanned. The platform issues that credential per run, from the
+      # API key this project already holds — no personal access token to store.
       - name: Get repository token
         id: repo_token
         env:
-          CONVISO_APIKEY: ${{ secrets.CONVISO_APIKEY }}
-          API_URL: ${{ inputs.api_url || 'https://app.convisoappsec.com' }}
-          REPO_FULL_NAME: ${{ inputs.repo_full_name }}
-          ASSET_ID: ${{ inputs.asset_id }}
-          SCAN_RUN_ID: ${{ inputs.scan_run_id }}
+          # Secret name vs variable name: the scanner reads CONVISO_APIKEY, while
+          # the repository secret keeps the CONVISO_API_KEY name it always had.
+          CONVISO_APIKEY: ${{ secrets.CONVISO_API_KEY }}
+          CONVISO_BASE_URL: ${{ inputs.api_url || 'https://app.convisoappsec.com' }}
+          CONVISO_REPO_FULL_NAME: ${{ inputs.repo_full_name }}
+          CONVISO_ASSET_ID: ${{ inputs.asset_id }}
+          CONVISO_SCAN_RUN_ID: ${{ inputs.scan_run_id }}
         run: |
-          python3 - <<'PYEOF'
-          import json, os, sys, urllib.error, urllib.request
-
-          api_url = os.environ["API_URL"].rstrip("/")
-          api_key = os.environ.get("CONVISO_APIKEY", "")
-          if not api_key:
-              sys.exit("CONVISO_APIKEY is not set. Add it as a secret in this repository.")
-
-          payload = {"repo_full_name": os.environ["REPO_FULL_NAME"]}
-          for field, var in (("asset_id", "ASSET_ID"), ("scan_run_id", "SCAN_RUN_ID")):
-              if os.environ.get(var):
-                  payload[field] = os.environ[var]
-
-          req = urllib.request.Request(
-              f"{api_url}/api/v2/github/repository_token",
-              data=json.dumps(payload).encode(),
-              method="POST",
-              headers={"Content-Type": "application/json", "x-api-key": api_key},
-          )
-
-          try:
-              with urllib.request.urlopen(req, timeout=60) as resp:
-                  body = json.loads(resp.read().decode())
-          except urllib.error.HTTPError as err:
-              detail = err.read().decode()
-              sys.exit(
-                  f"Conviso Platform refused to issue a repository token (HTTP {err.code}): {detail}\n"
-                  "Check that this repository is imported as an asset of the company owning CONVISO_APIKEY."
-              )
-          except Exception as err:
-              sys.exit(f"Could not reach the Conviso Platform at {api_url}: {err}")
-
-          token = body.get("token")
-          if not token:
-              sys.exit("Conviso Platform returned no token.")
-
+          TOKEN=$(conviso-ast-repository-token --provider github)
           # Mask BEFORE the value reaches the step output, so it can never surface
           # in this job's log.
-          print(f"::add-mask::{token}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"token={token}\n")
-          PYEOF
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Checkout target repository
         uses: actions/checkout@v6
@@ -115,13 +85,36 @@ jobs:
 
       - name: Run Conviso AST
         env:
-          CONVISO_APIKEY: ${{ secrets.CONVISO_APIKEY }}
+          CONVISO_APIKEY: ${{ secrets.CONVISO_API_KEY }}
           CONVISO_BASE_URL: ${{ inputs.api_url || 'https://app.convisoappsec.com' }}
-          CONVISO_COMPANY_ID: ${{ inputs.company_id }}
+          # Post-merge dispatches carry no company id, so fall back to the variable
+          # configured on this project. The dispatched value still wins when the
+          # platform sends one, which keeps a single orchestrator correct even if it
+          # ever serves more than one company.
+          CONVISO_COMPANY_ID: ${{ inputs.company_id || vars.CONVISO_COMPANY_ID }}
           CONVISO_ASSET_ID: ${{ inputs.asset_id }}
           CONVISO_SCAN_RUN_ID: ${{ inputs.scan_run_id }}
           CONVISO_BRANCH: ${{ inputs.branch }}
+          # The job container runs as root while the checked-out files belong to
+          # the runner's user, so git refuses the workspace with "detected dubious
+          # ownership". Semgrep shells out to `git status` and osv-scanner reads
+          # .gitignore, so both come back EMPTY instead of failing — a scan that
+          # reports zero findings while having scanned nothing.
+          #
+          # Set through GIT_CONFIG_* rather than `git config --global` because a
+          # container job overrides HOME (/github/home), which hides any gitconfig
+          # written elsewhere. These are read regardless of HOME.
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: '*'
         run: |
+          # The scanner requires a company id, but its own check only rejects an
+          # UNSET variable. An empty string slips past that check and fails much
+          # later with an opaque API error. Fail here, where the cause is readable.
+          if [ -z "$CONVISO_COMPANY_ID" ]; then
+            echo "::error::No company id. Add a repository variable named CONVISO_COMPANY_ID with your Conviso company id (Settings > Secrets and variables > Actions > Variables)."
+            exit 1
+          fi
           conviso-ast -p . -o /tmp/conviso-ast-session.zip
 
       - name: Upload session log
