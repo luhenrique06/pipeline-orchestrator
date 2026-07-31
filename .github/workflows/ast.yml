@@ -86,7 +86,7 @@ jobs:
       - name: Run Conviso AST
         env:
           CONVISO_APIKEY: ${{ secrets.CONVISO_API_KEY }}
-          CONVISO_BASE_URL: ${{ inputs.api_url || 'https://app.convisoappsec.com' }}
+          CONVISO_BASE_URL: ${{ inputs.api_url || 'https://staging.convisoappsec.com' }}
           # Post-merge dispatches carry no company id, so fall back to the variable
           # configured on this project. The dispatched value still wins when the
           # platform sends one, which keeps a single orchestrator correct even if it
