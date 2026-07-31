@@ -108,13 +108,6 @@ jobs:
           GIT_CONFIG_KEY_0: safe.directory
           GIT_CONFIG_VALUE_0: '*'
         run: |
-          # The scanner requires a company id, but its own check only rejects an
-          # UNSET variable. An empty string slips past that check and fails much
-          # later with an opaque API error. Fail here, where the cause is readable.
-          if [ -z "$CONVISO_COMPANY_ID" ]; then
-            echo "::error::No company id. Add a repository variable named CONVISO_COMPANY_ID with your Conviso company id (Settings > Secrets and variables > Actions > Variables)."
-            exit 1
-          fi
           conviso-ast -p . -o /tmp/conviso-ast-session.zip
 
       - name: Upload session log
