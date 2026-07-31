@@ -108,7 +108,7 @@ jobs:
           GIT_CONFIG_KEY_0: safe.directory
           GIT_CONFIG_VALUE_0: '*'
         run: |
-          conviso-ast -p . -o /tmp/conviso-ast-session.zip
+          conviso-ast -p . -o /tmp/conviso-ast-session.zip -d
 
       - name: Upload session log
         if: always()
