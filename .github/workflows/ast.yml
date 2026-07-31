@@ -64,7 +64,7 @@ jobs:
           # Secret name vs variable name: the scanner reads CONVISO_APIKEY, while
           # the repository secret keeps the CONVISO_API_KEY name it always had.
           CONVISO_APIKEY: ${{ secrets.CONVISO_API_KEY }}
-          CONVISO_BASE_URL: ${{ inputs.api_url || 'https://app.convisoappsec.com' }}
+          CONVISO_BASE_URL: ${{ inputs.api_url || 'https://staging.convisoappsec.com' }}
           CONVISO_REPO_FULL_NAME: ${{ inputs.repo_full_name }}
           CONVISO_ASSET_ID: ${{ inputs.asset_id }}
           CONVISO_SCAN_RUN_ID: ${{ inputs.scan_run_id }}
